@@ -1,0 +1,9 @@
+﻿################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+/Components/LiveSplit.Tinertia.exe
+/.vs/LiveSplit.Tinertia/v15
+/bin
+/obj
+/LiveSplit.Tinertia.csproj.user
