@@ -2,8 +2,8 @@
 using System.Diagnostics;
 namespace LiveSplit.Tinertia {
 	public partial class SplitterMemory {
-		private static ProgramPointer CgGame = new ProgramPointer(true, new ProgramSignature(PointerVersion.V1, "558BEC83EC288B05????????83EC086A0050E8????????83C41085C0741D8B05|8"));
-		private static ProgramPointer Tinertia = new ProgramPointer(true, new ProgramSignature(PointerVersion.V1, "558BEC53575683EC5C8B7D088B05????????83EC0C50E8????????83C41085C00F84|14"));
+		private static ProgramPointer CgGame = new ProgramPointer(AutoDeref.Single, new ProgramSignature(PointerVersion.V1, "558BEC83EC288B05????????83EC086A0050E8????????83C41085C0741D8B05", 8));
+		private static ProgramPointer Tinertia = new ProgramPointer(AutoDeref.Single, new ProgramSignature(PointerVersion.V1, "558BEC53575683EC5C8B7D088B05????????83EC0C50E8????????83C41085C00F84", 14));
 		public Process Program { get; set; }
 		public bool IsHooked { get; set; } = false;
 		private DateTime lastHooked;
@@ -143,15 +143,15 @@ namespace LiveSplit.Tinertia {
 		}
 
 		public bool HookProcess() {
-			if ((Program == null || Program.HasExited) && DateTime.Now > lastHooked.AddSeconds(1)) {
+			IsHooked = Program != null && !Program.HasExited;
+			if (!IsHooked && DateTime.Now > lastHooked.AddSeconds(1)) {
 				lastHooked = DateTime.Now;
 				Process[] processes = Process.GetProcessesByName("Tinertia-Windows");
 				Program = processes.Length == 0 ? null : processes[0];
-				IsHooked = true;
-			}
-
-			if (Program == null || Program.HasExited) {
-				IsHooked = false;
+				if (Program != null) {
+					MemoryReader.Update64Bit(Program);
+					IsHooked = true;
+				}
 			}
 
 			return IsHooked;
@@ -165,12 +165,19 @@ namespace LiveSplit.Tinertia {
 	public enum PointerVersion {
 		V1
 	}
+	public enum AutoDeref {
+		None,
+		Single,
+		Double
+	}
 	public class ProgramSignature {
 		public PointerVersion Version { get; set; }
 		public string Signature { get; set; }
-		public ProgramSignature(PointerVersion version, string signature) {
+		public int Offset { get; set; }
+		public ProgramSignature(PointerVersion version, string signature, int offset) {
 			Version = version;
 			Signature = signature;
+			Offset = offset;
 		}
 		public override string ToString() {
 			return Version.ToString() + " - " + Signature;
@@ -183,15 +190,15 @@ namespace LiveSplit.Tinertia {
 		private int[] offsets;
 		public IntPtr Pointer { get; private set; }
 		public PointerVersion Version { get; private set; }
-		public bool AutoDeref { get; private set; }
+		public AutoDeref AutoDeref { get; private set; }
 
-		public ProgramPointer(bool autoDeref, params ProgramSignature[] signatures) {
+		public ProgramPointer(AutoDeref autoDeref, params ProgramSignature[] signatures) {
 			AutoDeref = autoDeref;
 			this.signatures = signatures;
 			lastID = -1;
 			lastTry = DateTime.MinValue;
 		}
-		public ProgramPointer(bool autoDeref, params int[] offsets) {
+		public ProgramPointer(AutoDeref autoDeref, params int[] offsets) {
 			AutoDeref = autoDeref;
 			this.offsets = offsets;
 			lastID = -1;
@@ -204,8 +211,7 @@ namespace LiveSplit.Tinertia {
 		}
 		public string Read(Process program, params int[] offsets) {
 			GetPointer(program);
-			IntPtr ptr = (IntPtr)program.Read<uint>(Pointer, offsets);
-			return program.Read(ptr);
+			return program.Read((IntPtr)program.Read<uint>(Pointer, offsets));
 		}
 		public byte[] ReadBytes(Process program, int length, params int[] offsets) {
 			GetPointer(program);
@@ -220,7 +226,7 @@ namespace LiveSplit.Tinertia {
 			program.Write(Pointer, value, offsets);
 		}
 		public IntPtr GetPointer(Process program) {
-			if ((program?.HasExited).GetValueOrDefault(true)) {
+			if (program == null) {
 				Pointer = IntPtr.Zero;
 				lastID = -1;
 				return Pointer;
@@ -234,8 +240,15 @@ namespace LiveSplit.Tinertia {
 
 				Pointer = GetVersionedFunctionPointer(program);
 				if (Pointer != IntPtr.Zero) {
-					if (AutoDeref) {
+					if (AutoDeref != AutoDeref.None) {
 						Pointer = (IntPtr)program.Read<uint>(Pointer);
+						if (AutoDeref == AutoDeref.Double) {
+							if (MemoryReader.is64Bit) {
+								Pointer = (IntPtr)program.Read<ulong>(Pointer);
+							} else {
+								Pointer = (IntPtr)program.Read<uint>(Pointer);
+							}
+						}
 					}
 				}
 			}
@@ -243,23 +256,24 @@ namespace LiveSplit.Tinertia {
 		}
 		private IntPtr GetVersionedFunctionPointer(Process program) {
 			if (signatures != null) {
+				MemorySearcher searcher = new MemorySearcher();
+				searcher.MemoryFilter = delegate (MemInfo info) {
+					return (info.State & 0x1000) != 0 && (info.Protect & 0x40) != 0 && (info.Protect & 0x100) == 0;
+				};
 				for (int i = 0; i < signatures.Length; i++) {
 					ProgramSignature signature = signatures[i];
 
-					IntPtr ptr = program.FindSignatures(signature.Signature)[0];
+					IntPtr ptr = searcher.FindSignature(program, signature.Signature);
 					if (ptr != IntPtr.Zero) {
 						Version = signature.Version;
-						return ptr;
+						return ptr + signature.Offset;
 					}
 				}
-			} else {
-				IntPtr ptr = (IntPtr)program.Read<uint>(program.MainModule.BaseAddress, offsets);
-				if (ptr != IntPtr.Zero) {
-					return ptr;
-				}
+
+				return IntPtr.Zero;
 			}
 
-			return IntPtr.Zero;
+			return (IntPtr)program.Read<uint>(program.MainModule.BaseAddress, offsets);
 		}
 	}
 	public enum CgTimerState {
