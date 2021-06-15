@@ -3,7 +3,7 @@
 ################################################################################
 
 /Components/LiveSplit.Tinertia.exe
-/.vs/LiveSplit.Tinertia/v15
+/.vs
 /bin
 /obj
 /LiveSplit.Tinertia.csproj.user
